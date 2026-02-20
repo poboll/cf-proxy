@@ -16,6 +16,8 @@ services:
       - ./nginx.local.conf:/app/nginx.local.conf
       - /var/run/docker.sock:/var/run/docker.sock
       - ./panel.py:/app/panel.py
+    ports:
+      - "127.0.0.1:3367:3367"
     environment:
       - COOKIE=${COOKIE:-}
     restart: unless-stopped
