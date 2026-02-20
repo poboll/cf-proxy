@@ -8,6 +8,7 @@
 [![Nginx](https://img.shields.io/badge/nginx-alpine-009639?logo=nginx)](https://nginx.org)
 [![Python](https://img.shields.io/badge/python-3.11--alpine-3776AB?logo=python)](https://python.org)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker)](https://docs.docker.com/compose/)
+[![Docker Hub](https://img.shields.io/docker/pulls/poboll/cf-panel?logo=docker&label=poboll%2Fcf-panel)](https://hub.docker.com/r/poboll/cf-panel)
 
 </div>
 
@@ -71,6 +72,10 @@ git clone https://github.com/poboll/cf-proxy.git
 cd cf-proxy
 docker compose up -d
 ```
+
+> 镜像已发布至 Docker Hub，`docker compose up -d` 会自动拉取，无需本地构建。
+> - `nginx:alpine` — 官方镜像
+> - [`poboll/cf-panel`](https://hub.docker.com/r/poboll/cf-panel) — 管理面板
 
 访问 `http://localhost:3366`，微信扫码登录后 SESSION 自动持久化。
 
@@ -164,7 +169,7 @@ Docker 模式下 panel 每 15 秒健康检查，连续 2 次失败自动重启 p
 | 容器 | 镜像 | 内存 |
 |------|------|------|
 | cf-proxy | nginx:alpine | ~2 MB |
-| cf-panel | codefather-panel | ~10 MB |
+| cf-panel | poboll/cf-panel | ~10 MB |
 
 ---
 
