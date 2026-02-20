@@ -61,6 +61,15 @@ cf-proxy 是一个基于 Nginx 的反向代理，将主账号 Cookie 注入所�
 
 ---
 
+## Docker Hub
+
+| 镜像 | 链接 |
+|------|------|
+| `poboll/cf-panel` | [hub.docker.com/r/poboll/cf-panel](https://hub.docker.com/r/poboll/cf-panel) |
+| `nginx:alpine` | 官方镜像，自动拉取 |
+
+---
+
 ## 快速开始
 
 ### 方式一：Docker（本地 / 局域网）
