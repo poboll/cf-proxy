@@ -11,6 +11,7 @@ services:
 
   panel:
     image: poboll/cf-panel:latest
+    platform: linux/amd64
     container_name: cf-panel
     volumes:
       - ./nginx.local.conf:/app/nginx.local.conf
