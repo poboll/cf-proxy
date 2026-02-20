@@ -10,9 +10,7 @@ services:
     restart: unless-stopped
 
   panel:
-    build:
-      context: .
-      dockerfile: Dockerfile.panel
+    image: poboll/cf-panel:latest
     container_name: cf-panel
     volumes:
       - ./nginx.local.conf:/app/nginx.local.conf
