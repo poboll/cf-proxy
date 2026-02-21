@@ -1,7 +1,8 @@
-const UPSTREAM_MAIN  = 'https://www.codefather.cn';
-const UPSTREAM_API   = 'https://api.codefather.cn';
-const MY_HOST        = 'yupi.caiths.com';
+const UPSTREAM_MAIN    = 'https://www.codefather.cn';
+const UPSTREAM_API     = 'https://api.codefather.cn';
+const MY_HOST          = 'yupi.caiths.com';
 const FALLBACK_SESSION = 'MzhjYTBiODAtOWQ4MS00YTI3LWFlOTItOWZiOGZhYjQ4Mzk0';
+const SESSION_TTL      = 2592000;
 
 const REWRITE_TYPES = [
   'text/html',
@@ -82,13 +83,34 @@ function getUserSession(cookieHeader) {
   return m ? m[1] : null;
 }
 
-function buildUpstreamCookie(request, loginPath) {
-  const incoming = request.headers.get('Cookie') || '';
+function extractSessionFromSetCookie(headers) {
+  const entries = headers.getAll
+    ? headers.getAll('set-cookie')
+    : (headers.get('set-cookie') ? [headers.get('set-cookie')] : []);
+  for (const entry of entries) {
+    const m = entry.match(/SESSION=([^;]+)/i);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+async function getActiveSession(env, browserSession) {
+  if (browserSession) return browserSession;
+  if (env.SESSION_KV) {
+    const stored = await env.SESSION_KV.get('session');
+    if (stored) return stored;
+  }
+  return FALLBACK_SESSION;
+}
+
+async function buildUpstreamCookie(request, loginPath, env) {
+  const incoming    = request.headers.get('Cookie') || '';
   const userSession = getUserSession(incoming);
   if (loginPath) {
     return userSession ? 'SESSION=' + userSession : '';
   }
-  return 'SESSION=' + (userSession || FALLBACK_SESSION);
+  const active = await getActiveSession(env, userSession);
+  return 'SESSION=' + active;
 }
 
 function copySetCookies(upstreamHeaders, outHeaders) {
@@ -145,8 +167,8 @@ export default {
       const resp = await fetch(proxyUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0',
-          'Referer': 'https://www.codefather.cn/',
-          'Accept': 'image/avif,image/webp,image/apng,*/*',
+          'Referer':    'https://www.codefather.cn/',
+          'Accept':     'image/avif,image/webp,image/apng,*/*',
         },
         cf: { cacheTtl: 86400, cacheEverything: true },
       });
@@ -167,7 +189,7 @@ export default {
                           path.startsWith('/api/user/logout') ||
                           path === '/api/user/get/login';
 
-      const cookieVal = buildUpstreamCookie(request, isLoginPath);
+      const cookieVal = await buildUpstreamCookie(request, isLoginPath, env);
       if (cookieVal) {
         rh.set('Cookie', cookieVal);
       } else {
@@ -187,6 +209,15 @@ export default {
       outH.set('Access-Control-Expose-Headers',    '*');
       outH.set('Cache-Control', 'no-store');
       copySetCookies(upstream.headers, outH);
+
+      if (isLoginPath && env.SESSION_KV) {
+        const newSession = extractSessionFromSetCookie(upstream.headers);
+        if (newSession) {
+          ctx.waitUntil(
+            env.SESSION_KV.put('session', newSession, { expirationTtl: SESSION_TTL })
+          );
+        }
+      }
 
       if (needsRewrite(ct)) {
         const text = await upstream.text();
@@ -217,7 +248,7 @@ export default {
 
     // ── ALL OTHER REQUESTS → www.codefather.cn ──────────────────────────────
     const rh = cleanRequestHeaders(request.headers, 'www.codefather.cn');
-    rh.set('Cookie',  buildUpstreamCookie(request, false));
+    rh.set('Cookie',  await buildUpstreamCookie(request, false, env));
     rh.set('Referer', 'https://www.codefather.cn/');
     rh.set('Origin',  'https://www.codefather.cn');
 
