@@ -4,10 +4,15 @@ const MY_HOST          = 'yupi.caiths.com';
 const FALLBACK_SESSION = 'MzhjYTBiODAtOWQ4MS00YTI3LWFlOTItOWZiOGZhYjQ4Mzk0';
 const SESSION_TTL      = 2592000;
 
-// Module-level SESSION cache — survives across requests in the same isolate.
-// Avoids a KV round-trip on every request; refreshed whenever a new SESSION is
-// written to KV (i.e. after every successful login).
 let cachedSession = null;
+
+const CACHEABLE_API_PATHS = [
+  '/api/tag/get/all_select',
+  '/api/keywordHighlight/list/all',
+  '/api/tag/list/all_select',
+  '/api/post/tag/list/all',
+];
+const API_CACHE_TTL = 60;
 
 const REWRITE_TYPES = [
   'text/html',
@@ -19,7 +24,6 @@ const REWRITE_TYPES = [
   'text/x-component',
 ];
 
-// ── Panel HTML ───────────────────────────────────────────────────────────────
 const PANEL_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -45,8 +49,6 @@ textarea{width:100%;background:#0f172a;border:1px solid #334155;color:#e2e8f0;bo
 textarea:focus{outline:none;border-color:#3b82f6}
 button{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:.875rem;font-weight:600;cursor:pointer;margin-top:10px;transition:background .2s}
 button:hover{background:#2563eb}
-button.danger{background:#dc2626}
-button.danger:hover{background:#b91c1c}
 .msg{margin-top:10px;font-size:.8rem;padding:8px 12px;border-radius:8px;display:none}
 .msg.ok{background:#052e16;color:#4ade80;border:1px solid #166534;display:block}
 .msg.err{background:#431407;color:#fb923c;border:1px solid #9a3412;display:block}
@@ -55,12 +57,10 @@ button.danger:hover{background:#b91c1c}
 <body>
 <div class="wrap">
   <h1>⚡ cf-proxy 管理面板</h1>
-
   <div class="card" id="status-card">
     <h2>SESSION 状态</h2>
     <div id="status-body">加载中...</div>
   </div>
-
   <div class="card">
     <h2>手动更新 SESSION</h2>
     <p style="color:#94a3b8;font-size:.875rem;margin-bottom:4px">粘贴新的 SESSION Cookie 值（仅值，不含 "SESSION="）</p>
@@ -68,7 +68,6 @@ button.danger:hover{background:#b91c1c}
     <button onclick="updateSession()">保存并生效</button>
     <div id="update-msg" class="msg"></div>
   </div>
-
   <div class="card">
     <h2>操作</h2>
     <button onclick="clearCache()">清除 Worker 内存缓存</button>
@@ -76,53 +75,40 @@ button.danger:hover{background:#b91c1c}
     <div id="cache-msg" class="msg"></div>
   </div>
 </div>
-
 <script>
 async function fetchStatus() {
   const r = await fetch('/panel/api/status');
   const d = await r.json();
-  const card = document.getElementById('status-body');
   const ok = d.valid;
-  card.innerHTML = \`
-    <div style="margin-bottom:12px">
-      <span class="badge \${ok ? 'ok' : 'warn'}">\${ok ? '✓ 有效' : '✗ 已过期或无效'}</span>
-    </div>
+  document.getElementById('status-body').innerHTML = \`
+    <div style="margin-bottom:12px"><span class="badge \${ok?'ok':'warn'}">\${ok?'✓ 有效':'✗ 已过期或无效'}</span></div>
     <div class="row"><span class="label">SESSION 来源</span><span class="val">\${d.source}</span></div>
-    <div class="row"><span class="label">用户名</span><span class="val">\${d.username || '（未能获取）'}</span></div>
-    <div class="row"><span class="label">KV 内存缓存</span><span class="val">\${d.memCached ? '已命中' : '未命中（首次访问）'}</span></div>
+    <div class="row"><span class="label">用户名</span><span class="val">\${d.username||'（未能获取）'}</span></div>
+    <div class="row"><span class="label">Worker 内存缓存</span><span class="val">\${d.memCached?'已命中':'未命中（首次访问）'}</span></div>
     <div class="mono">\${d.sessionPreview}</div>
   \`;
 }
-
 async function updateSession() {
   const val = document.getElementById('session-input').value.trim();
   const msg = document.getElementById('update-msg');
-  if (!val) { showMsg(msg, 'err', '请填写 SESSION 值'); return; }
-  const r = await fetch('/panel/api/update', { method: 'POST', body: val });
+  if (!val) { showMsg(msg,'err','请填写 SESSION 值'); return; }
+  const r = await fetch('/panel/api/update', { method:'POST', body:val });
   const d = await r.json();
-  if (d.ok) { showMsg(msg, 'ok', '✅ 已写入 KV 并刷新内存缓存'); fetchStatus(); }
-  else       { showMsg(msg, 'err', '❌ 失败: ' + d.error); }
+  if (d.ok) { showMsg(msg,'ok','✅ 已写入 KV 并刷新内存缓存'); fetchStatus(); }
+  else       { showMsg(msg,'err','❌ 失败: '+d.error); }
 }
-
 async function clearCache() {
-  const msg = document.getElementById('cache-msg');
-  const r = await fetch('/panel/api/clear-cache', { method: 'POST' });
-  const d = await r.json();
-  showMsg(msg, 'ok', '✅ 内存缓存已清除，下次请求将从 KV 重新读取');
+  await fetch('/panel/api/clear-cache', { method:'POST' });
+  showMsg(document.getElementById('cache-msg'),'ok','✅ 内存缓存已清除');
 }
-
-function showMsg(el, cls, text) {
-  el.textContent = text;
-  el.className = 'msg ' + cls;
-  setTimeout(() => { el.style.display = 'none'; el.className = 'msg'; }, 4000);
+function showMsg(el,cls,text) {
+  el.textContent=text; el.className='msg '+cls;
+  setTimeout(()=>{ el.style.display='none'; el.className='msg'; },4000);
 }
-
 fetchStatus();
 </script>
 </body>
 </html>`;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function needsRewrite(ct) {
   if (!ct) return false;
@@ -174,8 +160,8 @@ function extractSessionFromSetCookie(headers) {
 }
 
 async function getActiveSession(env, browserSession) {
-  if (browserSession) return browserSession;
-  if (cachedSession)  return cachedSession;
+  if (browserSession)  return browserSession;
+  if (cachedSession)   return cachedSession;
   if (env.SESSION_KV) {
     const stored = await env.SESSION_KV.get('session');
     if (stored) { cachedSession = stored; return stored; }
@@ -184,20 +170,16 @@ async function getActiveSession(env, browserSession) {
 }
 
 async function buildUpstreamCookie(request, loginPath, env) {
-  const incoming    = request.headers.get('Cookie') || '';
-  const userSession = getUserSession(incoming);
+  const userSession = getUserSession(request.headers.get('Cookie') || '');
   if (loginPath) return userSession ? 'SESSION=' + userSession : '';
-  const active = await getActiveSession(env, userSession);
-  return 'SESSION=' + active;
+  return 'SESSION=' + await getActiveSession(env, userSession);
 }
 
 function copySetCookies(upstreamHeaders, outHeaders) {
   const entries = upstreamHeaders.getAll
     ? upstreamHeaders.getAll('set-cookie')
     : (upstreamHeaders.get('set-cookie') ? [upstreamHeaders.get('set-cookie')] : []);
-  for (const entry of entries) {
-    outHeaders.append('Set-Cookie', rewriteSetCookie(entry));
-  }
+  for (const entry of entries) outHeaders.append('Set-Cookie', rewriteSetCookie(entry));
 }
 
 function copyHeaders(src, excludeKeys) {
@@ -208,32 +190,31 @@ function copyHeaders(src, excludeKeys) {
   return out;
 }
 
+
 const SKIP_HEADERS = ['set-cookie', 'content-security-policy', 'x-frame-options'];
 
 const INJECT_SCRIPT = `<script>
 (function(){
-  window._hmt = window._hmt || { push: function(){} };
-  var _f = window.fetch;
-  window.fetch = function(input, init) {
-    var url = (typeof input === 'string') ? input : (input && input.url) || '';
-    var fixed = url.replace(/(\/api)\/api\//, '$1/');
-    if (fixed !== url) input = (typeof input === 'string') ? fixed : new Request(fixed, input);
-    return _f.call(this, input, init);
+  window._hmt=window._hmt||{push:function(){}};
+  var _f=window.fetch;
+  window.fetch=function(input,init){
+    var url=(typeof input==='string')?input:(input&&input.url)||'';
+    var fixed=url.replace(/(\/api)\/api\//,'$1/');
+    if(fixed!==url)input=(typeof input==='string')?fixed:new Request(fixed,input);
+    return _f.call(this,input,init);
   };
   function hardHome(e){
-    var a = e.target.closest('a[href="/"]');
-    if(!a) return;
-    var logo = a.closest('#logo, .ant-pro-top-nav-header-logo');
-    if(!logo && !a.closest('.ant-pro-base-menu-horizontal')) return;
-    e.preventDefault(); e.stopPropagation();
-    if('caches' in window) caches.keys().then(function(ks){ ks.forEach(function(k){ caches.delete(k); }); });
+    var a=e.target.closest('a[href="/"]');
+    if(!a)return;
+    var logo=a.closest('#logo, .ant-pro-top-nav-header-logo');
+    if(!logo&&!a.closest('.ant-pro-base-menu-horizontal'))return;
+    e.preventDefault();e.stopPropagation();
+    if('caches'in window)caches.keys().then(function(ks){ks.forEach(function(k){caches.delete(k);});});
     window.location.replace('/');
   }
-  document.addEventListener('click', hardHome, true);
+  document.addEventListener('click',hardHome,true);
 })();
 <\/script>`;
-
-// ── Panel API handlers ───────────────────────────────────────────────────────
 
 async function handlePanel(path, request, env) {
   if (path === '/panel' || path === '/panel/') {
@@ -241,56 +222,35 @@ async function handlePanel(path, request, env) {
       headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' },
     });
   }
-
   if (path === '/panel/api/status') {
     const kv = env.SESSION_KV ? await env.SESSION_KV.get('session') : null;
     const active = cachedSession || kv || FALLBACK_SESSION;
-    const source = cachedSession ? 'Worker 内存缓存'
-                 : kv            ? 'Workers KV'
-                 :                 'FALLBACK_SESSION 常量';
-
-    let username = null;
-    let valid = false;
+    const source = cachedSession ? 'Worker 内存缓存' : kv ? 'Workers KV' : 'FALLBACK_SESSION 常量';
+    let username = null, valid = false;
     try {
       const r = await fetch('https://api.codefather.cn/api/user/get/login', {
         headers: { Cookie: 'SESSION=' + active, Host: 'api.codefather.cn' },
       });
-      const json = await r.json();
-      if (json.code === 0 && json.data) {
-        valid    = true;
-        username = json.data.userName || json.data.userAccount || null;
-      }
+      const j = await r.json();
+      if (j.code === 0 && j.data) { valid = true; username = j.data.userName || j.data.userAccount || null; }
     } catch (_) {}
-
-    return Response.json({
-      ok: true, valid, source, username,
-      memCached:     !!cachedSession,
-      sessionPreview: active.slice(0, 20) + '...' + active.slice(-8),
-    });
+    return Response.json({ ok: true, valid, source, username, memCached: !!cachedSession,
+      sessionPreview: active.slice(0, 20) + '...' + active.slice(-8) });
   }
-
   if (path === '/panel/api/update' && request.method === 'POST') {
     const newVal = (await request.text()).trim();
-    if (!newVal || newVal.length < 10) {
-      return Response.json({ ok: false, error: 'SESSION 值无效' }, { status: 400 });
-    }
-    if (!env.SESSION_KV) {
-      return Response.json({ ok: false, error: 'KV 未绑定' }, { status: 500 });
-    }
+    if (!newVal || newVal.length < 10) return Response.json({ ok: false, error: 'SESSION 值无效' }, { status: 400 });
+    if (!env.SESSION_KV) return Response.json({ ok: false, error: 'KV 未绑定' }, { status: 500 });
     await env.SESSION_KV.put('session', newVal, { expirationTtl: SESSION_TTL });
     cachedSession = newVal;
     return Response.json({ ok: true });
   }
-
   if (path === '/panel/api/clear-cache' && request.method === 'POST') {
     cachedSession = null;
     return Response.json({ ok: true });
   }
-
   return new Response('Not Found', { status: 404 });
 }
-
-// ── Main export ──────────────────────────────────────────────────────────────
 
 export default {
   async fetch(request, env, ctx) {
@@ -305,32 +265,18 @@ export default {
       });
     }
 
-    // ── /panel/* ─────────────────────────────────────────────────────────────
-    if (path.startsWith('/panel')) {
-      return handlePanel(path, request, env);
-    }
+    if (path.startsWith('/panel')) return handlePanel(path, request, env);
 
     // ── /pic/* ──────────────────────────────────────────────────────────────
     if (path.startsWith('/pic/')) {
       const picPath   = path.slice(4);
       const originUrl = 'https://pic.code-nav.cn' + picPath + url.search;
       const isSvg    = picPath.toLowerCase().endsWith('.svg');
-
-      if (isSvg) {
-        const resp = await fetch(originUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.codefather.cn/' },
-          cf: { cacheTtl: 86400, cacheEverything: true },
-        });
-        const rh = new Headers(resp.headers);
-        rh.set('Cache-Control', 'public, max-age=86400');
-        rh.set('Access-Control-Allow-Origin', '*');
-        return new Response(resp.body, { status: resp.status, headers: rh });
-      }
-
-      const proxyUrl = 'https://www.codefather.cn/_next/image?url='
-                       + encodeURIComponent(originUrl) + '&w=1920&q=90';
-      const resp = await fetch(proxyUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.codefather.cn/', 'Accept': 'image/avif,image/webp,image/apng,*/*' },
+      const fetchUrl = isSvg ? originUrl
+        : 'https://www.codefather.cn/_next/image?url=' + encodeURIComponent(originUrl) + '&w=1920&q=90';
+      const resp = await fetch(fetchUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.codefather.cn/',
+          ...(isSvg ? {} : { 'Accept': 'image/avif,image/webp,image/apng,*/*' }) },
         cf: { cacheTtl: 86400, cacheEverything: true },
       });
       const rh = new Headers(resp.headers);
@@ -341,14 +287,15 @@ export default {
 
     // ── /api/* ──────────────────────────────────────────────────────────────
     if (path.startsWith('/api/')) {
+      const isCacheableApi = CACHEABLE_API_PATHS.includes(path) && request.method === 'GET';
+      const isLoginPath    = path.startsWith('/api/user/login') ||
+                             path.startsWith('/api/user/logout') ||
+                             path === '/api/user/get/login';
+
       const targetUrl = UPSTREAM_API + path + url.search;
       const rh = cleanRequestHeaders(request.headers, 'api.codefather.cn');
       rh.set('Origin',  'https://www.codefather.cn');
       rh.set('Referer', 'https://www.codefather.cn/');
-
-      const isLoginPath = path.startsWith('/api/user/login') ||
-                          path.startsWith('/api/user/logout') ||
-                          path === '/api/user/get/login';
 
       const cookieVal = await buildUpstreamCookie(request, isLoginPath, env);
       if (cookieVal) rh.set('Cookie', cookieVal);
@@ -358,6 +305,7 @@ export default {
         method:  request.method,
         headers: rh,
         body:    ['GET', 'HEAD'].includes(request.method) ? null : request.body,
+        cf: isCacheableApi ? { cacheTtl: API_CACHE_TTL, cacheEverything: true } : {},
       });
 
       const ct   = upstream.headers.get('content-type') || '';
@@ -365,16 +313,14 @@ export default {
       outH.set('Access-Control-Allow-Origin',      scheme + '://' + MY_HOST);
       outH.set('Access-Control-Allow-Credentials', 'true');
       outH.set('Access-Control-Expose-Headers',    '*');
-      outH.set('Cache-Control', 'no-store');
+      outH.set('Cache-Control', isCacheableApi ? `public, s-maxage=${API_CACHE_TTL}` : 'no-store');
       copySetCookies(upstream.headers, outH);
 
       if (isLoginPath && env.SESSION_KV) {
         const newSession = extractSessionFromSetCookie(upstream.headers);
         if (newSession) {
           cachedSession = newSession;
-          ctx.waitUntil(
-            env.SESSION_KV.put('session', newSession, { expirationTtl: SESSION_TTL })
-          );
+          ctx.waitUntil(env.SESSION_KV.put('session', newSession, { expirationTtl: SESSION_TTL }));
         }
       }
 
@@ -386,7 +332,7 @@ export default {
       return new Response(upstream.body, { status: upstream.status, headers: outH });
     }
 
-    // ── /_next/static/* — aggressively cached ────────────────────────────────
+    // ── /_next/static/* ──────────────────────────────────────────────────────
     if (path.startsWith('/_next/static/')) {
       const rh = cleanRequestHeaders(request.headers, 'www.codefather.cn');
       const upstream = await fetch(UPSTREAM_MAIN + path + url.search, {
@@ -396,7 +342,6 @@ export default {
       const ct   = upstream.headers.get('content-type') || '';
       const outH = new Headers(upstream.headers);
       outH.set('Cache-Control', 'public, max-age=31536000, immutable');
-
       if (needsRewrite(ct)) {
         const text = await upstream.text();
         outH.delete('content-length');
@@ -405,7 +350,7 @@ export default {
       return new Response(upstream.body, { status: upstream.status, headers: outH });
     }
 
-    // ── /_next/image — cache optimised images ────────────────────────────────
+    // ── /_next/image ─────────────────────────────────────────────────────────
     if (path.startsWith('/_next/image')) {
       const rh = cleanRequestHeaders(request.headers, 'www.codefather.cn');
       const upstream = await fetch(UPSTREAM_MAIN + path + url.search, {
@@ -427,9 +372,6 @@ export default {
       method:  request.method,
       headers: rh,
       body:    ['GET', 'HEAD'].includes(request.method) ? null : request.body,
-      cf: path === '/' || path === ''
-        ? { cacheTtl: 30, cacheEverything: false }
-        : {},
     });
 
     const ct   = upstream.headers.get('content-type') || '';
@@ -441,13 +383,14 @@ export default {
       text = rewriteUrls(text, scheme);
 
       if (ct.includes('text/html')) {
-        outH.delete('content-length');
-        // Let CF edge cache HTML for 10s (stale-while-revalidate 30s for instant repeat visits)
-        outH.set('Cache-Control', 'public, s-maxage=10, stale-while-revalidate=30');
         const insertAt = text.lastIndexOf('</body>');
         text = insertAt !== -1
           ? text.slice(0, insertAt) + INJECT_SCRIPT + text.slice(insertAt)
           : text + INJECT_SCRIPT;
+
+        outH.delete('content-length');
+        outH.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
+        return new Response(text, { status: upstream.status, headers: outH });
       }
 
       outH.delete('content-length');
