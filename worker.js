@@ -129,29 +129,13 @@ function rewriteUrls(text, scheme) {
     .replaceAll('http:\\/\\/localhost:3366',     h.replace('://', ':\\/\\/'));
 }
 
-function htmlTransformStream(scheme) {
-  const enc = new TextEncoder();
-  const dec = new TextDecoder();
-  let tail = '';
-  return new TransformStream({
-    transform(chunk, ctrl) {
-      let text = tail + dec.decode(chunk, { stream: true });
-      const keep = 200;
-      if (text.length > keep) {
-        ctrl.enqueue(enc.encode(rewriteUrls(text.slice(0, -keep), scheme)));
-        tail = text.slice(-keep);
-      } else {
-        tail = text;
-      }
-    },
-    flush(ctrl) {
-      let text = rewriteUrls(tail, scheme);
-      const idx = text.lastIndexOf('</body>');
-      ctrl.enqueue(enc.encode(idx !== -1
-        ? text.slice(0, idx) + INJECT_SCRIPT + text.slice(idx)
-        : text + INJECT_SCRIPT));
-    }
-  });
+async function processHtml(body, scheme) {
+  const raw = await new Response(body).text();
+  let text = rewriteUrls(raw, scheme);
+  const idx = text.lastIndexOf('</body>');
+  return idx !== -1
+    ? text.slice(0, idx) + INJECT_SCRIPT + text.slice(idx)
+    : text + INJECT_SCRIPT;
 }
 
 function rewriteSetCookie(raw) {
@@ -420,7 +404,10 @@ export default {
       outH.delete('content-length');
       outH.set('Cache-Control', 'no-store');
       if (!isRSC && ct.includes('text/html')) {
-        return new Response(upstream.body.pipeThrough(htmlTransformStream(scheme)), { status: upstream.status, headers: outH });
+        outH.delete('content-length');
+        outH.set('Cache-Control', 'no-store');
+        const html = await processHtml(upstream.body, scheme);
+        return new Response(html, { status: upstream.status, headers: outH });
       }
       const text = await upstream.text();
       return new Response(rewriteUrls(text, scheme), { status: upstream.status, headers: outH });
