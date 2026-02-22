@@ -209,7 +209,6 @@ const INJECT_SCRIPT = `<script>
     var logo=a.closest('#logo, .ant-pro-top-nav-header-logo');
     if(!logo&&!a.closest('.ant-pro-base-menu-horizontal'))return;
     e.preventDefault();e.stopPropagation();
-    if('caches'in window)caches.keys().then(function(ks){ks.forEach(function(k){caches.delete(k);});});
     window.location.replace('/');
   }
   document.addEventListener('click',hardHome,true);
@@ -223,9 +222,13 @@ async function handlePanel(path, request, env) {
     });
   }
   if (path === '/panel/api/status') {
+    const browserSession = getUserSession(request.headers.get('Cookie') || '');
     const kv = env.SESSION_KV ? await env.SESSION_KV.get('session') : null;
-    const active = cachedSession || kv || FALLBACK_SESSION;
-    const source = cachedSession ? 'Worker 内存缓存' : kv ? 'Workers KV' : 'FALLBACK_SESSION 常量';
+    const active = browserSession || cachedSession || kv || FALLBACK_SESSION;
+    const source = browserSession ? '浏览器 Cookie（已同步）'
+      : cachedSession ? 'Worker 内存缓存'
+      : kv ? 'Workers KV'
+      : 'FALLBACK_SESSION 常量';
     let username = null, valid = false;
     try {
       const r = await fetch('https://api.codefather.cn/api/user/get/login', {
@@ -234,6 +237,10 @@ async function handlePanel(path, request, env) {
       const j = await r.json();
       if (j.code === 0 && j.data) { valid = true; username = j.data.userName || j.data.userAccount || null; }
     } catch (_) {}
+    if (valid && browserSession && browserSession !== kv && env.SESSION_KV) {
+      cachedSession = browserSession;
+      await env.SESSION_KV.put('session', browserSession, { expirationTtl: SESSION_TTL });
+    }
     return Response.json({ ok: true, valid, source, username, memCached: !!cachedSession,
       sessionPreview: active.slice(0, 20) + '...' + active.slice(-8) });
   }
@@ -289,8 +296,7 @@ export default {
     if (path.startsWith('/api/')) {
       const isCacheableApi = CACHEABLE_API_PATHS.includes(path) && request.method === 'GET';
       const isLoginPath    = path.startsWith('/api/user/login') ||
-                             path.startsWith('/api/user/logout') ||
-                             path === '/api/user/get/login';
+                             path.startsWith('/api/user/logout');
 
       const targetUrl = UPSTREAM_API + path + url.search;
       const rh = cleanRequestHeaders(request.headers, 'api.codefather.cn');
@@ -389,7 +395,7 @@ export default {
           : text + INJECT_SCRIPT;
 
         outH.delete('content-length');
-        outH.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
+        outH.set('Cache-Control', 'no-store');
         return new Response(text, { status: upstream.status, headers: outH });
       }
 
