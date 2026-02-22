@@ -117,11 +117,41 @@ function needsRewrite(ct) {
 }
 
 function rewriteUrls(text, scheme) {
+  const h = scheme + '://' + MY_HOST;
   return text
-    .replaceAll('https://pic.code-nav.cn',   scheme + '://' + MY_HOST + '/pic')
-    .replaceAll('https://api.codefather.cn',  scheme + '://' + MY_HOST)
-    .replaceAll('https://www.codefather.cn',  scheme + '://' + MY_HOST)
-    .replaceAll('http://localhost:3366',       scheme + '://' + MY_HOST);
+    .replaceAll('https://pic.code-nav.cn',      h + '/pic')
+    .replaceAll('https:\\/\\/pic.code-nav.cn',  h.replace('://', ':\\/\\/') + '\\/pic')
+    .replaceAll('https://api.codefather.cn',    h)
+    .replaceAll('https:\\/\\/api.codefather.cn',h.replace('://', ':\\/\\/'))
+    .replaceAll('https://www.codefather.cn',    h)
+    .replaceAll('https:\\/\\/www.codefather.cn',h.replace('://', ':\\/\\/'))
+    .replaceAll('http://localhost:3366',         h)
+    .replaceAll('http:\\/\\/localhost:3366',     h.replace('://', ':\\/\\/'));
+}
+
+function htmlTransformStream(scheme) {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  let tail = '';
+  return new TransformStream({
+    transform(chunk, ctrl) {
+      let text = tail + dec.decode(chunk, { stream: true });
+      const keep = 200;
+      if (text.length > keep) {
+        ctrl.enqueue(enc.encode(rewriteUrls(text.slice(0, -keep), scheme)));
+        tail = text.slice(-keep);
+      } else {
+        tail = text;
+      }
+    },
+    flush(ctrl) {
+      let text = rewriteUrls(tail, scheme);
+      const idx = text.lastIndexOf('</body>');
+      ctrl.enqueue(enc.encode(idx !== -1
+        ? text.slice(0, idx) + INJECT_SCRIPT + text.slice(idx)
+        : text + INJECT_SCRIPT));
+    }
+  });
 }
 
 function rewriteSetCookie(raw) {
@@ -199,7 +229,7 @@ const INJECT_SCRIPT = `<script>
   var _f=window.fetch;
   window.fetch=function(input,init){
     var url=(typeof input==='string')?input:(input&&input.url)||'';
-    var fixed=url.replace(/(\/api)\/api\//,'$1/');
+    var fixed=url.includes('/api/api/')?url.replace('/api/api/','/api/'):url;
     if(fixed!==url)input=(typeof input==='string')?fixed:new Request(fixed,input);
     return _f.call(this,input,init);
   };
@@ -384,23 +414,16 @@ export default {
     const outH = copyHeaders(upstream.headers, SKIP_HEADERS);
     copySetCookies(upstream.headers, outH);
 
+    const isRSC = (request.headers.get('Accept') || '').includes('text/x-component');
+
     if (needsRewrite(ct)) {
-      let text = await upstream.text();
-      text = rewriteUrls(text, scheme);
-
-      if (ct.includes('text/html')) {
-        const insertAt = text.lastIndexOf('</body>');
-        text = insertAt !== -1
-          ? text.slice(0, insertAt) + INJECT_SCRIPT + text.slice(insertAt)
-          : text + INJECT_SCRIPT;
-
-        outH.delete('content-length');
-        outH.set('Cache-Control', 'no-store');
-        return new Response(text, { status: upstream.status, headers: outH });
-      }
-
       outH.delete('content-length');
-      return new Response(text, { status: upstream.status, headers: outH });
+      outH.set('Cache-Control', 'no-store');
+      if (!isRSC && ct.includes('text/html')) {
+        return new Response(upstream.body.pipeThrough(htmlTransformStream(scheme)), { status: upstream.status, headers: outH });
+      }
+      const text = await upstream.text();
+      return new Response(rewriteUrls(text, scheme), { status: upstream.status, headers: outH });
     }
 
     return new Response(upstream.body, { status: upstream.status, headers: outH });
